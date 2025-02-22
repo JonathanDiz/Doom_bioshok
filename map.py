@@ -36,34 +36,24 @@ mini_map = [
     [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
 ]
 
+TILE_SIZE = 100  # Tamaño de cada celda del mapa
+
 
 class Map:
     def __init__(self, game):
         self.game = game
-        self.map_data = [
-            mini_map
-        ]
-
         self.mini_map = mini_map
-        self.world_map = {}
-        self.rows = len(self.mini_map)
-        self.cols = len(self.mini_map[0])
-        self.get_map()
+        self.rows = len(mini_map)
+        self.cols = len(mini_map[0])
+        self.world_map = self.generate_world_map()
 
-    def get_map(self):
-        for j, row in enumerate(self.mini_map):
-            for i, value in enumerate(row):
-                if value:
-                    self.world_map[(i, j)] = value
+    def generate_world_map(self):
+        """Genera un set de posiciones donde hay paredes en el mapa."""
+        return {(x, y): value for y, row in enumerate(mini_map) for x, value in enumerate(row) if value}
 
     def draw(self):
-        [pg.draw.rect(self.game.screen, 'darkgray', (pos[0] * 100, pos[1] * 100, 100, 100), 2)
-        for pos in self.world_map]
-
-
-class MapData:
-    def __init__(self, data):
-        self.data = data
-
-    def get_data(self):
-        return self.data
+        """Dibuja el minimapa en la pantalla."""
+        screen = self.game.screen
+        for (x, y), value in self.world_map.items():
+            color = 'darkgray' if value else 'black'
+            pg.draw.rect(screen, color, pg.Rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE), 2)

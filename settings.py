@@ -6,6 +6,10 @@ RES = WIDTH, HEIGHT = 1600, 900
 HALF_WIDTH = WIDTH // 2
 HALF_HEIGHT = HEIGHT // 2
 FPS = 0
+FONT_PATH = "fonts\Teko-Regular.ttf"
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+FLOOR_COLOR = (150, 150, 150)
 
 PLAYER_POS = 1.5, 5  # mini_map
 PLAYER_ANGLE = 0
