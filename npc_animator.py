@@ -2,14 +2,14 @@ import pygame as pg
 import asyncio
 import concurrent.futures
 from math import sin, cos, pi
-from pathfinding.core.grid import Grid
-from pathfinding.finder.a_star import AStarFinder
+from game_navigation import GamePathFinder
 
 from map import TILE_SIZE
 
 class NPCAnimator:
     def __init__(self, game, max_workers=2):
         self.game = game
+        self.pathfinder = GamePathFinder(game)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers)
         self.loop = asyncio.get_event_loop()
         self.animation_tasks = {}
@@ -116,17 +116,21 @@ class NPCAnimator:
             'move'
         )
 
-    async def dynamic_pathfinding(self, npc, target_pos, grid_matrix):
-        """Pathfinding en tiempo real con animación integrada"""
-        grid = Grid(matrix=grid_matrix)
-        start = grid.node(npc.x // TILE_SIZE, npc.y // TILE_SIZE)
-        end = grid.node(target_pos[0] // TILE_SIZE, target_pos[1] // TILE_SIZE)
+    async def dynamic_pathfinding(self, npc, target_pos):
+        """Ejemplo de uso con el pathfinder actualizado"""
+        start = (
+            npc.x // self.game.map.tile_size, 
+            npc.y // self.game.map.tile_size
+        )
+        goal = (
+            target_pos[0] // self.game.map.tile_size,
+            target_pos[1] // self.game.map.tile_size
+        )
         
-        finder = AStarFinder()
-        path, _ = finder.find_path(start, end, grid)
-        
+        path = await self.pathfinder.find_path(start, goal)
         if path:
-            await self.patrol_path(npc, path)
+            npc.target_x = path[0][0] * self.game.map.tile_size
+            npc.target_y = path[0][1] * self.game.map.tile_size
 
     def create_animation_task(self, npc_id, coroutine):
         """Registra y maneja una tarea de animación"""

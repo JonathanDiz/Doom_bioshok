@@ -6,7 +6,7 @@ RES = WIDTH, HEIGHT = 1600, 900
 HALF_WIDTH = WIDTH // 2
 HALF_HEIGHT = HEIGHT // 2
 FPS = 0
-FONT_PATH = "fonts\Teko-Regular.ttf"
+FONT_PATH = r"fonts\Teko-Regular.ttf"
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 FLOOR_COLOR = (150, 150, 150)
@@ -36,6 +36,7 @@ SCREEN_DIST = HALF_WIDTH / math.tan(HALF_FOV)
 SCALE = WIDTH // NUM_RAYS
 
 TEXTURE_SIZE = 256
+TILE_SIZE = 60
 HALF_TEXTURE_SIZE = TEXTURE_SIZE // 2
 MUSIC_ON = True
 MUSIC_PATH= 'resources/sound/theme.mp3'
