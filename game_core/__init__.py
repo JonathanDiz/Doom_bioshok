@@ -1,38 +1,47 @@
 """
-Módulo principal del núcleo del juego
-
-Exporta la interfaz pública principal:
-from game_core import GameCore, ResourceManager, initialize_managers
+Módulo principal que expone la API pública del paquete de utilidades del juego.
+Controla las exportaciones principales y la configuración inicial del paquete.
 """
 
-from .core import GameCore
-from .initialization import PyGameInitialization
-from .execution_engine import ExecutionEngine
-from .event_manager import EventManager
-from .managers import (
-    ResourceManager,
-    DisplayManager,
-    DebugManager,
-    initialize_core_managers
-)
+import logging
+from typing import List
 
-__all__ = [
-    # Core del sistema
-    "GameCore",
-    "Initialization",
-    "ExecutionEngine",
-    
-    # Managers
-    "ResourceManager",
-    "DisplayManager", 
-    "EventManager",
-    "DebugManager",
-    
-    # Factory methods
-    "initialize_core_managers"
+# Configuración inicial de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('game.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Versión del paquete
+__version__ = "1.3.0"
+
+# Exportaciones públicas de los subsistemas principales
+from .display_manager import DisplayManager
+from .event_manager import EventManager
+from .execution_engine import ExecutionEngine
+from .resource_manager import ResourceManager
+from .initialization import Initialization
+from .core import GameCore, GameCoreError
+from .boot import BootManager, BootStage, CriticalBootError
+
+__all__: List[str] = [
+    'DisplayManager',
+    'EventManager',
+    'ExecutionEngine',
+    'ResourceManager',
+    'Initialization',
+    'GameCore',
+    'GameCoreError',
+    'BootManager',
+    'BootStage',
+    'CriticalBootError',
+    '__version__'
 ]
 
-# Configuración de acceso rápido
-__version__ = "1.3.0"
-__author__ = "Jonathan Joao Diaz Olivares <jonathanfullstack@gmail.com>"
-__license__ = "GPL-3.0 license"
+logger.info(f"Game Utilities v{__version__} inicializado correctamente")
+logger.debug("Módulos disponibles: %s", __all__)

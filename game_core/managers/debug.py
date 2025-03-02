@@ -4,79 +4,129 @@ import platform
 import traceback
 import pygame as pg
 from collections import deque
-from typing import Any, Dict
+from typing import Any, Dict, List
+from contextlib import contextmanager
 
 class DebugManager:
-    """Gestor avanzado de diagnóstico y profiling para el juego"""
+    """Sistema avanzado de diagnóstico y profiling para el motor del juego"""
     
     __slots__ = (
         'core', 'logger', 'metrics', '_fps_buffer',
-        '_start_time', '_current_errors'
+        '_start_time', '_current_errors', '_perf_stack'
     )
     
     def __init__(self, core):
-        self.core = core  # Referencia al núcleo del juego
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.core = core
+        self.logger = logging.getLogger('GameDebug')
         self.metrics = {
-            'frame_times': deque(maxlen=60),
-            'memory_usage': deque(maxlen=60)
+            'frame_times': deque(maxlen=300),  # 5 segundos a 60 FPS
+            'memory_usage': deque(maxlen=60),
+            'custom': {}
         }
         self._fps_buffer = deque(maxlen=60)
         self._start_time = time.monotonic()
-        self._current_errors = []
-        
+        self._current_errors: List[Dict] = []
+        self._perf_stack = []
+
         self._log_system_info()
         
     def _log_system_info(self):
-        """Registra información del sistema al inicializar"""
-        sys_info = {
-            'OS': platform.platform(),
-            'Processor': platform.processor(),
-            'Python': platform.python_version(),
-            'Pygame': pg.version.ver,
-            'SDL': pg.get_sdl_version()
-        }
+        """Registra información detallada del sistema al inicializar"""
+        sys_info = [
+            f"Sistema Operativo: {platform.platform()}",
+            f"Procesador: {platform.processor() or 'Desconocido'}",
+            f"Versión Python: {platform.python_version()}",
+            f"Versión Pygame: {pg.version.ver}",
+            f"Versión SDL: {'.'.join(map(str, pg.get_sdl_version()))}"
+        ]
         
-        self.logger.info("System Information:\n%s",
-            '\n'.join(f"{k}: {v}" for k, v in sys_info.items())
-        )
+        self.logger.info("Información del sistema:\n%s", '\n'.join(sys_info))
     
-    def track_performance(self, metric_name: str, duration: float):
-        """Registra métricas de rendimiento con precisión"""
+    @contextmanager
+    def track_performance(self, metric_name: str):
+        """Context manager para medición precisa de rendimiento"""
+        start_time = time.monotonic()
+        self._perf_stack.append(metric_name)
+        try:
+            yield
+        finally:
+            duration = time.monotonic() - start_time
+            self._perf_stack.pop()
+            self._record_performance(metric_name, duration)
+    
+    def _record_performance(self, name: str, duration: float):
+        """Registra métricas de rendimiento con análisis de bottlenecks"""
         self.metrics['frame_times'].append(duration)
-        if duration > 0.016:  # 60 FPS threshold
-            self.logger.warning(f"Slow operation: {metric_name} took {duration:.4f}s")
+        
+        # Umbrales de advertencia dinámicos
+        warning_threshold = 1.0 / self.core.display.target_fps * 1.5
+        if duration > warning_threshold:
+            context = ' > '.join(self._perf_stack)
+            self.logger.warning(
+                f"Lentitud en {name} ({context}): {duration*1000:.1f}ms"
+            )
     
     def log_error(self, context: str, error: Exception):
-        """Registra errores con stack trace completo"""
+        """Registra errores con información estructurada para debugging"""
         error_info = {
             'timestamp': time.time(),
             'context': context,
-            'error_type': type(error).__name__,
+            'type': error.__class__.__name__,
             'message': str(error),
-            'stack_trace': traceback.format_exc()
+            'traceback': traceback.format_exc(),
+            'game_state': self._capture_game_state()
         }
         self._current_errors.append(error_info)
         self.logger.critical(
-            f"CRITICAL ERROR in {context}",
-            extra={'error_data': error_info}
+            f"Error crítico en {context}: {error}",
+            extra={'debug_info': error_info}
         )
+    
+    def _capture_game_state(self) -> Dict[str, Any]:
+        """Captura estado relevante del juego para diagnóstico"""
+        return {
+            'fps': self.current_fps,
+            'scene': getattr(self.core, 'current_scene', 'Desconocido'),
+            'entities': len(getattr(self.core, 'entities', [])),
+            'resolution': self.core.display.logical_resolution
+        }
     
     def get_diagnostics(self) -> Dict[str, Any]:
         """Genera reporte de diagnóstico en tiempo real"""
+        frame_times = self.metrics['frame_times']
         return {
             'fps': self.current_fps,
-            'avg_frame_time': sum(self.metrics['frame_times']) / len(self.metrics['frame_times']) if self.metrics['frame_times'] else 0,
-            'recent_errors': self._current_errors[-5:]
+            'frame_time': {
+                'current': frame_times[-1] if frame_times else 0,
+                'avg': sum(frame_times)/len(frame_times) if frame_times else 0,
+                'max': max(frame_times, default=0)
+            },
+            'recent_errors': self._current_errors[-3:],
+            'memory': {
+                'texturas': len(self.core.resource_manager._cache),
+                'entidades_activas': self._count_active_entities()
+            }
         }
     
-    @property
-    def current_fps(self) -> float:
-        """Calcula los FPS actuales suavizados"""
-        return len(self._fps_buffer) / sum(self._fps_buffer) if self._fps_buffer else 0
-
-    def update_frame(self):
-        """Debe llamarse cada frame para actualizar métricas"""
+    def _count_active_entities(self) -> int:
+        """Helper para contar entidades activas"""
+        return sum(1 for e in getattr(self.core, 'entities', []) if e.active)
+    
+    def update_frame_metrics(self):
+        """Actualiza métricas de frame, debe llamarse una vez por frame"""
         frame_time = time.monotonic() - self._start_time
         self._fps_buffer.append(frame_time)
         self._start_time = time.monotonic()
+    
+    @property
+    def current_fps(self) -> float:
+        """Calcula FPS suavizados con media móvil"""
+        if not self._fps_buffer:
+            return 0.0
+        return len(self._fps_buffer) / sum(self._fps_buffer)
+    
+    def reset_metrics(self):
+        """Reinicia todas las métricas de rendimiento"""
+        self.metrics['frame_times'].clear()
+        self._fps_buffer.clear()
+        self._current_errors.clear()

@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from enum import Enum, auto
-from typing import Dict, List, Awaitable, Optional, Callable
-from pygame import mixer
-from pathlib import Path
+from typing import Dict, List, Optional, Callable, Awaitable
 from dataclasses import dataclass
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 class BootStage(Enum):
+    """Etapas del proceso de arranque"""
     PRE_INIT = auto()
     ESSENTIAL = auto()
     BACKGROUND = auto()
@@ -14,213 +16,196 @@ class BootStage(Enum):
 
 @dataclass
 class BootTask:
+    """Estructura para gestionar tareas de inicialización"""
     name: str
-    coroutine: Callable
+    coroutine: Callable[[], Awaitable[None]]
     dependencies: List[str]
+    stage: BootStage
     retries: int = 3
     critical: bool = True
+    weight: float = 1.0
+
+class CriticalBootError(Exception):
+    """Excepción para errores críticos durante el arranque"""
+    pass
 
 class BootManager:
-    """Sistema de arranque modular con gestión de dependencias y recuperación de errores"""
+    """Sistema avanzado de arranque con gestión de dependencias y recuperación de errores"""
     
     __slots__ = (
-        'core', '_stages', '_progress', '_total_tasks', 
-        '_current_stage', '_task_registry', '_progress_callback'
+        'core', '_tasks', '_progress', '_total_weight',
+        '_current_stage', '_task_dependencies', '_progress_callback'
     )
 
     def __init__(self, core):
         self.core = core
-        self._stages: Dict[BootStage, List[BootTask]] = {
-            BootStage.PRE_INIT: [],
-            BootStage.ESSENTIAL: [],
-            BootStage.BACKGROUND: [],
-            BootStage.POST_INIT: []
-        }
+        self._tasks: Dict[BootStage, List[BootTask]] = defaultdict(list)
         self._progress: Dict[str, float] = {}
-        self._total_tasks = 0
-        self._current_stage: BootStage = BootStage.PRE_INIT
-        self._task_registry: Dict[str, BootTask] = {}
+        self._total_weight: float = 0.0
+        self._current_stage: Optional[BootStage] = None
+        self._task_dependencies: Dict[str, List[str]] = {}
         self._progress_callback: Optional[Callable[[float], None]] = None
 
-    def register_task(self, task: BootTask, stage: BootStage):
-        """Registra una tarea de inicialización con metadatos"""
-        self._stages[stage].append(task)
-        self._task_registry[task.name] = task
-        self._total_tasks += 1
+        self._register_core_tasks()
+
+    def _register_core_tasks(self):
+        """Registra tareas esenciales del sistema"""
+        self.add_task(
+            BootTask(
+                name='init_display',
+                coroutine=self._init_display,
+                dependencies=[],
+                stage=BootStage.PRE_INIT,
+                critical=True
+            )
+        )
+        
+        self.add_task(
+            BootTask(
+                name='load_input_profiles',
+                coroutine=self._load_input_profiles,
+                dependencies=['init_display'],
+                stage=BootStage.ESSENTIAL,
+                critical=True
+            )
+        )
+        
+        self.add_task(
+            BootTask(
+                name='init_audio_subsystem',
+                coroutine=self._init_audio,
+                dependencies=[],
+                stage=BootStage.ESSENTIAL,
+                critical=False
+            )
+        )
+
+    def add_task(self, task: BootTask):
+        """Añade una nueva tarea de inicialización"""
+        self._tasks[task.stage].append(task)
+        self._task_dependencies[task.name] = task.dependencies
+        self._total_weight += task.weight
 
     def set_progress_callback(self, callback: Callable[[float], None]):
         """Configura callback para reportar progreso"""
         self._progress_callback = callback
 
     async def cold_start(self):
-        """Secuencia completa de arranque con gestión de errores"""
+        """Ejecuta la secuencia completa de arranque"""
         try:
-            await self._execute_stage(BootStage.PRE_INIT)
-            await self._execute_stage(BootStage.ESSENTIAL)
-            await self._execute_stage(BootStage.BACKGROUND)
-            await self._execute_stage(BootStage.POST_INIT)
+            for stage in BootStage:
+                await self._execute_stage(stage)
         except CriticalBootError as e:
-            await self._cleanup_failed_startup()
+            await self._emergency_shutdown()
             raise
 
     async def _execute_stage(self, stage: BootStage):
-        """Ejecuta todas las tareas de una etapa con dependencias"""
+        """Ejecuta todas las tareas de una etapa"""
+        logger.info(f"Iniciando etapa de arranque: {stage.name}")
         self._current_stage = stage
-        tasks = self._resolve_dependencies(self._stages[stage])
         
+        tasks = self._topological_sort(self._tasks[stage])
         for task in tasks:
-            await self._run_task_with_retry(task)
-            self._update_progress()
+            await self._execute_task_with_retry(task)
+            self._update_progress(task)
 
-    def _resolve_dependencies(self, tasks: List[BootTask]) -> List[BootTask]:
-        """Ordena tareas según dependencias usando topological sort"""
-        # Implementación de ordenación topológica aquí
-        return tasks
+    def _topological_sort(self, tasks: List[BootTask]) -> List[BootTask]:
+        """Ordena tareas basado en dependencias usando Kahn's algorithm"""
+        task_map = {task.name: task for task in tasks}
+        in_degree = {task.name: 0 for task in tasks}
+        graph = defaultdict(list)
+        queue = []
 
-    async def _run_task_with_retry(self, task: BootTask):
+        # Construir grafo de dependencias
+        for task in tasks:
+            for dep in self._task_dependencies.get(task.name, []):
+                if dep in task_map:
+                    graph[dep].append(task.name)
+                    in_degree[task.name] += 1
+
+        # Inicializar cola con nodos sin dependencias
+        for task in tasks:
+            if in_degree[task.name] == 0:
+                queue.append(task.name)
+
+        result = []
+        while queue:
+            current = queue.pop(0)
+            result.append(task_map[current])
+            
+            for neighbor in graph[current]:
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+
+        # Verificar ciclos
+        if len(result) != len(tasks):
+            raise CriticalBootError("Dependencias cíclicas detectadas")
+            
+        return result
+
+    async def _execute_task_with_retry(self, task: BootTask):
         """Ejecuta una tarea con reintentos y manejo de errores"""
-        for attempt in range(task.retries):
+        for attempt in range(1, task.retries + 1):
             try:
-                result = await task.coroutine()
-                self._progress[task.name] = 1.0
-                return result
+                logger.debug(f"Ejecutando tarea: {task.name} (intento {attempt})")
+                await task.coroutine()
+                return
             except Exception as e:
-                logging.error(f"Boot task failed: {task.name} (attempt {attempt+1})")
-                if attempt == task.retries - 1:
+                if attempt == task.retries:
+                    logger.error(f"Fallo en tarea: {task.name}")
                     if task.critical:
-                        raise CriticalBootError(f"Critical task failed: {task.name}") from e
-                    else:
-                        logging.warning(f"Non-critical task {task.name} failed")
+                        raise CriticalBootError(f"Tarea crítica fallida: {task.name}") from e
+                    logger.warning(f"Tarea no crítica {task.name} falló")
 
-    def _update_progress(self):
-        """Actualiza el callback de progreso general"""
+    def _update_progress(self, task: BootTask):
+        """Actualiza el progreso y notifica"""
+        self._progress[task.name] = 1.0
         if self._progress_callback:
             completed = sum(self._progress.values())
-            self._progress_callback(completed / self._total_tasks)
-
-    async def _cleanup_failed_startup(self):
-        """Limpieza de recursos en caso de fallo crítico"""
-        logging.critical("Performing emergency shutdown...")
-        
-        cleanup_tasks = [
-            self._shutdown_display(),
-            self._release_input_devices(),
-            self._unload_audio()
-        ]
-        
-        await asyncio.gather(*cleanup_tasks)
-        self.core.reset_state()
-
-    async def _shutdown_display(self):
-        """Apagado seguro del subsistema gráfico"""
-        if hasattr(self.core, 'display'):
-            await self.core.display.cleanup()
-
-    async def _release_input_devices(self):
-        """Liberación de dispositivos de entrada"""
-        if hasattr(self.core, 'input'):
-            self.input.release_all()
-
-    async def _unload_audio(self):
-        """Descarga de recursos de audio"""
-        if hasattr(self.core, 'audio'):
-            self.audio.stop_all()
-
-class CriticalBootError(Exception):
-    """Excepción para errores críticos durante el arranque"""
-    pass
-
-# Tareas predefinidas para el sistema core
-def core_boot_tasks(boot_manager: BootManager):
-    """Registra las tareas esenciales del sistema"""
-    boot_manager.register_task(
-        BootTask(
-            name='init_display',
-            coroutine=_init_display,
-            dependencies=[],
-            critical=True
-        ),
-        BootStage.PRE_INIT
-    )
-    
-    boot_manager.register_task(
-        BootTask(
-            name='load_input_profiles',
-            coroutine=_load_input_profiles,
-            dependencies=['init_display'],
-            critical=True
-        ),
-        BootStage.ESSENTIAL
-    )
-    
-    boot_manager.register_task(
-        BootTask(
-            name='init_audio_subsystem',
-            coroutine=_init_audio,
-            dependencies=[],
-            critical=False
-        ),
-        BootStage.ESSENTIAL
-    )
+            self._progress_callback(completed / self._total_weight)
 
     async def _init_display(self):
-        """Inicialización asíncrona del subsistema gráfico"""
+        """Inicializa el subsistema gráfico"""
         from .managers.display import DisplayManager
         try:
             self.core.display = DisplayManager(self.core)
             await self.core.display.initialize()
-            self.core.display.set_vsync(True)
+            logger.info("Subsistema gráfico inicializado")
         except Exception as e:
-            logging.critical("Failed to initialize display subsystem")
+            logger.critical("Error inicializando display: %s", e)
             raise
 
     async def _load_input_profiles(self):
-        """Carga de configuraciones de entrada"""
+        """Carga configuraciones de entrada"""
         from .managers.input import InputManager
         try:
             self.core.input = InputManager(self.core)
             await self.core.input.load_profile('default')
+            logger.info("Perfiles de entrada cargados")
         except Exception as e:
-            logging.critical("Input system initialization failed")
+            logger.critical("Error cargando perfiles: %s", e)
             raise
 
     async def _init_audio(self):
-        """Inicialización no crítica del subsistema de audio"""
+        """Inicializa el subsistema de audio"""
         from .managers.audio import AudioManager
         try:
             self.core.audio = AudioManager(self.core)
             await self.core.audio.initialize()
+            logger.info("Subsistema de audio inicializado")
         except Exception as e:
-            logging.warning("Audio subsystem initialization failed")
+            logger.warning("Error no crítico en audio: %s", e)
 
-def core_boot_tasks(boot_manager: BootManager):
-    """Registra las tareas esenciales del sistema"""
-    boot_manager.register_task(
-        BootTask(
-            name='init_display',
-            coroutine=boot_manager._init_display,
-            dependencies=[],
-            critical=True
-        ),
-        BootStage.PRE_INIT
-    )
-    
-    boot_manager.register_task(
-        BootTask(
-            name='load_input_profiles',
-            coroutine=boot_manager._load_input_profiles,
-            dependencies=['init_display'],
-            critical=True
-        ),
-        BootStage.ESSENTIAL
-    )
-    
-    boot_manager.register_task(
-        BootTask(
-            name='init_audio_subsystem',
-            coroutine=boot_manager._init_audio,
-            dependencies=[],
-            critical=False
-        ),
-        BootStage.ESSENTIAL
-    )
+    async def _emergency_shutdown(self):
+        """Apagado de emergencia controlado"""
+        logger.critical("Realizando limpieza de emergencia...")
+        shutdown_tasks = []
+        
+        if hasattr(self.core, 'display'):
+            shutdown_tasks.append(self.core.display.cleanup())
+        if hasattr(self.core, 'audio'):
+            shutdown_tasks.append(self.core.audio.stop_all())
+        
+        await asyncio.gather(*shutdown_tasks)
+        logger.info("Recursos liberados exitosamente")

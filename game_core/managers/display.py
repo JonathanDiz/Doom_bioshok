@@ -2,10 +2,11 @@ import time
 import pygame as pg
 import asyncio
 import logging
-import math
 from pathlib import Path
 from typing import Callable, Tuple, Dict, Optional
-from ..utils.async_tools import AsyncLoader, run_parallel
+from ..utils.async_tools import AsyncLoader
+
+logger = logging.getLogger(__name__)
 
 class DisplayManager:
     """Gestor avanzado de renderizado con soporte para OpenGL moderno y escalado inteligente"""
@@ -13,9 +14,10 @@ class DisplayManager:
     __slots__ = (
         'core', '_window', '_render_surface', '_display_info',
         '_vsync_enabled', '_resolution', '_scaling_mode', '_shaders',
-        '_gl_context_created', '_target_fps', '_frame_data', '_scaler_cache'
+        '_gl_context_created', '_frame_data', '_scaler_cache',
+        '_target_fps', '_fallback_mode'
     )
-    
+
     def __init__(self, core):
         self.core = core
         self._window: Optional[pg.Surface] = None
@@ -26,12 +28,14 @@ class DisplayManager:
         self._scaling_mode: str = 'letterbox'
         self._shaders: Dict[str, Dict] = {}
         self._gl_context_created: bool = False
-        self._target_fps: int = 144
         self._frame_data = {
             'delta_time': 0.0,
-            'frame_count': 0
+            'frame_count': 0,
+            'start_time': 0.0
         }
         self._scaler_cache: Dict[str, Callable] = {}
+        self._target_fps: int = 144
+        self._fallback_mode: bool = False
 
     async def initialize(self):
         """Inicialización asíncrona completa del subsistema gráfico"""
@@ -40,21 +44,23 @@ class DisplayManager:
             await self._create_optimized_window()
             await self._load_critical_shaders()
             self._build_scaler_functions()
-            logging.info("Display subsystem initialized successfully")
+            logger.info("Subsistema gráfico inicializado con éxito")
         except Exception as e:
-            logging.critical(f"Display init failed: {e}")
+            logger.critical(f"Error inicializando display: {e}")
             self._fallback_to_software()
 
     async def _detect_display_capabilities(self):
         """Detección avanzada de capacidades del hardware"""
-        await asyncio.sleep(0)  # Yield para el event loop
+        await asyncio.sleep(0)  # Liberar el event loop
         
         self._display_info = {
             'modes': pg.display.list_modes(depth=32, flags=pg.OPENGL),
             'current': pg.display.Info(),
             'gl': {
-                'version': (pg.display.gl_get_attribute(pg.GL_CONTEXT_MAJOR_VERSION),
-                           pg.display.gl_get_attribute(pg.GL_CONTEXT_MINOR_VERSION)),
+                'version': (
+                    pg.display.gl_get_attribute(pg.GL_CONTEXT_MAJOR_VERSION),
+                    pg.display.gl_get_attribute(pg.GL_CONTEXT_MINOR_VERSION)
+                ),
                 'extensions': pg.display.gl_get_attribute(pg.GL_EXTENSIONS).split()
             },
             'max_texture_size': pg.display.gl_get_attribute(pg.GL_MAX_TEXTURE_SIZE)
@@ -65,8 +71,12 @@ class DisplayManager:
         best_mode = self._select_best_resolution()
         flags = self._generate_optimal_flags()
         
-        await self._create_gl_context(best_mode, flags)
-        self._apply_quality_settings()
+        try:
+            await self._create_gl_context(best_mode, flags)
+            self._apply_quality_settings()
+        except pg.error as e:
+            logger.error(f"Error contexto OpenGL: {e}")
+            raise RuntimeError("No se pudo crear contexto OpenGL")
 
     def _select_best_resolution(self) -> Tuple[int, int]:
         """Selección inteligente de resolución inicial"""
@@ -91,19 +101,15 @@ class DisplayManager:
 
     async def _create_gl_context(self, resolution: Tuple[int, int], flags: int):
         """Crea contexto GL moderno con gestión de errores"""
-        try:
-            pg.display.gl_set_attribute(pg.GL_CONTEXT_PROFILE_MASK, pg.GL_CONTEXT_PROFILE_CORE)
-            pg.display.gl_set_attribute(pg.GL_CONTEXT_MAJOR_VERSION, 3)
-            pg.display.gl_set_attribute(pg.GL_CONTEXT_MINOR_VERSION, 3)
-            pg.display.gl_set_attribute(pg.GL_STENCIL_SIZE, 8)
-            pg.display.gl_set_attribute(pg.GL_MULTISAMPLEBUFFERS, 1)
-            pg.display.gl_set_attribute(pg.GL_MULTISAMPLESAMPLES, 4)
-            
-            self._window = pg.display.set_mode(resolution, flags)
-            self._gl_context_created = True
-        except pg.error as e:
-            logging.error(f"OpenGL context failed: {e}")
-            raise RuntimeError("Could not create OpenGL context")
+        pg.display.gl_set_attribute(pg.GL_CONTEXT_PROFILE_MASK, pg.GL_CONTEXT_PROFILE_CORE)
+        pg.display.gl_set_attribute(pg.GL_CONTEXT_MAJOR_VERSION, 3)
+        pg.display.gl_set_attribute(pg.GL_CONTEXT_MINOR_VERSION, 3)
+        pg.display.gl_set_attribute(pg.GL_STENCIL_SIZE, 8)
+        pg.display.gl_set_attribute(pg.GL_MULTISAMPLEBUFFERS, 1)
+        pg.display.gl_set_attribute(pg.GL_MULTISAMPLESAMPLES, 4)
+        
+        self._window = pg.display.set_mode(resolution, flags)
+        self._gl_context_created = True
 
     def _apply_quality_settings(self):
         """Configura parámetros de calidad gráfica"""
@@ -114,16 +120,16 @@ class DisplayManager:
         pg.glBlendFunc(pg.GL_SRC_ALPHA, pg.GL_ONE_MINUS_SRC_ALPHA)
 
     async def _load_critical_shaders(self):
-        """Carga asíncrona de shaders esenciales con caché"""
+        """Carga asíncrona de shaders esenciales"""
         shader_dir = Path('resources/shaders')
-        await run_parallel([
-            self._load_and_compile_shader('main', shader_dir/'main.vert', shader_dir/'main.frag'),
-            self._load_and_compile_shader('ui', shader_dir/'ui.vert', shader_dir/'ui.frag'),
-            self._load_and_compile_shader('post', shader_dir/'post.vert', shader_dir/'post.frag')
-        ])
+        await asyncio.gather(
+            self._load_shader('main', shader_dir/'main.vert', shader_dir/'main.frag'),
+            self._load_shader('ui', shader_dir/'ui.vert', shader_dir/'ui.frag'),
+            self._load_shader('post', shader_dir/'post.vert', shader_dir/'post.frag')
+        )
 
-    async def _load_and_compile_shader(self, name: str, vert_path: Path, frag_path: Path):
-        """Carga y compila shaders con verificación de errores"""
+    async def _load_shader(self, name: str, vert_path: Path, frag_path: Path):
+        """Carga y compila shaders con manejo de errores"""
         try:
             vert_src = await AsyncLoader.load_text(vert_path)
             frag_src = await AsyncLoader.load_text(frag_path)
@@ -132,11 +138,11 @@ class DisplayManager:
             self._shaders[name] = {
                 'vert': vert_src,
                 'frag': frag_src,
-                'program': None  # Aquí iría el programa compilado real
+                'program': None  # Programa OpenGL real iría aquí
             }
-            logging.debug(f"Shader {name} loaded successfully")
+            logger.debug(f"Shader {name} cargado exitosamente")
         except Exception as e:
-            logging.error(f"Shader {name} error: {e}")
+            logger.error(f"Error en shader {name}: {e}")
             raise
 
     def _build_scaler_functions(self):
@@ -171,7 +177,7 @@ class DisplayManager:
         scaled = pg.transform.smoothscale(surface, (new_width, new_height))
         final = pg.Surface(self._window.get_size(), pg.SRCALPHA)
         final.blit(scaled, ((self._window.get_width() - new_width) // 2,
-                          (self._window.get_height() - new_height) // 2))
+                            (self._window.get_height() - new_height) // 2))
         return final
 
     def _aspect_scale(self, surface: pg.Surface) -> pg.Surface:
@@ -190,7 +196,8 @@ class DisplayManager:
         self._render_surface = pg.Surface(self._resolution, pg.SRCALPHA)
         
         await self._reload_shaders()
-        self.core.resource_manager.update_textures(self._resolution)
+        if self.core.resource_manager:
+            await self.core.resource_manager.update_textures(self._resolution)
 
     def begin_frame(self):
         """Prepara el buffer de renderizado"""
@@ -204,37 +211,42 @@ class DisplayManager:
         self._window.blit(scaled, (0, 0))
         pg.display.flip()
         
-        # Cálculo de delta_time
+        # Cálculo de métricas de rendimiento
         self._frame_data['delta_time'] = time.monotonic() - self._frame_data['start_time']
         self._frame_data['frame_count'] += 1
 
     def _apply_post_processing(self):
         """Aplica efectos post-procesado usando shaders"""
-        if 'post' in self._shaders:
-            # Implementación real usando OpenGL aquí
+        if 'post' in self._shaders and self._gl_context_created:
+            # Implementación real usando OpenGL iría aquí
             pass
 
     def _fallback_to_software(self):
         """Modo de emergencia sin aceleración hardware"""
         self._window = pg.display.set_mode(self._resolution, pg.SWSURFACE)
         self._gl_context_created = False
-        logging.warning("Running in software rendering mode")
-
-    @property
-    def delta_time(self) -> float:
-        """Tiempo transcurrido desde el último frame"""
-        return self._frame_data['delta_time']
-
-    @property
-    def fps(self) -> float:
-        """FPS actuales calculados suavizados"""
-        return 1.0 / self.delta_time if self.delta_time > 0 else 0
+        self._fallback_mode = True
+        logger.warning("Modo software activado")
 
     def set_fullscreen(self, enable: bool):
         """Cambia modo pantalla completa dinámicamente"""
         flags = self._window.get_flags()
-        if enable:
-            flags |= pg.FULLSCREEN
-        else:
-            flags &= ~pg.FULLSCREEN
-        pg.display.set_mode(self._resolution, flags)
+        new_flags = flags | pg.FULLSCREEN if enable else flags & ~pg.FULLSCREEN
+        pg.display.set_mode(self._resolution, new_flags)
+
+    @property
+    def delta_time(self) -> float:
+        """Tiempo transcurrido desde el último frame en segundos"""
+        return self._frame_data['delta_time']
+
+    @property
+    def fps(self) -> float:
+        """FPS actuales calculados (media móvil)"""
+        if self.delta_time > 0:
+            return 1.0 / self.delta_time
+        return 0.0
+
+    @property
+    def logical_resolution(self) -> Tuple[int, int]:
+        """Resolución lógica de renderizado"""
+        return self._resolution

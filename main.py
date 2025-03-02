@@ -5,7 +5,7 @@ import asyncio
 import logging
 from settings import GAME_CONFIG
 from player import Player
-from game_core import GameCore as BaseGameCore, PyGameInitialization
+from game_core import GameCore as BaseGameCore, Initialization
 from game_core.managers import initialize_core_managers
 
 # Configuración de rutas de importación
@@ -26,9 +26,9 @@ class GameCore(BaseGameCore):
     
     def __init__(self):
         super().__init__()
-        self.initializer = PyGameInitialization(config=GAME_CONFIG)
         self.input, self.display, self.resources, self.debug = initialize_core_managers(self)
         self._configure_managers()
+        self.initializer = Initialization(config=GAME_CONFIG)
         
     def _configure_managers(self):
         """Configuración inicial integrada de subsistemas"""
@@ -37,7 +37,7 @@ class GameCore(BaseGameCore):
             mouse_sensitivity=GAME_CONFIG['controls']['mouse_sensitivity'],
             key_bindings=GAME_CONFIG['controls']['key_bindings']
         )
-        
+
     async def boot(self):
         """Inicialización paralela de sistemas principales"""
         await self.initializer.async_initialize(
@@ -79,31 +79,82 @@ class DebugGameCore(GameCore):
         self.events.subscribe('quit', self._handle_system_quit)
         self.events.subscribe('shoot', self.player.handle_shoot)
         self.input.register_event(pg.QUIT, self._trigger_quit_event)
+
+    def _handle_system_quit(self):
+        """Manejo centralizado de la salida del juego"""
+        self.execution.stop()
+        self.running = False
+
+    async def process_input(self):
+        """Procesamiento avanzado de entradas con gestión de estados"""
+        input_state = self.input.process()
         
-    async def run_game_loop(self):
-        """Ejecución principal del bucle del juego"""
+        if input_state.quit_triggered:
+            self.events.dispatch('quit', {'source': 'user'})
+            
+        if input_state.actions.get('shoot'):
+            self.events.dispatch('shoot', {
+                'position': input_state.mouse_position,
+                'time': self.execution.current_frame_time
+            })
+
+    async def game_loop(self):
+        """Bucle principal optimizado con gestión de tiempo real"""
         try:
             while self.execution.is_running:
                 await self._process_frame()
-                self.debug.track_performance_metrics()
         except Exception as e:
-            self.debug.log_exception("GameLoop", e, critical=True)
+            self.debug.log_exception("GameLoopFailure", e)
         finally:
             await self._safe_shutdown()
 
+    async def _process_frame(self):
+        """Procesamiento completo de un frame del juego"""
+        with self.debug.track_performance("FrameProcessing"):
+            await self.process_input()
+            await self._update_world_state()
+            self._render_frame()
+            self._maintain_fps()
+
+    async def _update_world_state(self):
+        """Actualización del estado del juego con interpolación"""
+        self.player.update(
+            self.input.mouse_delta,
+            self.execution.delta_time
+        )
+
+    def _render_frame(self):
+        """Renderizado optimizado con doble buffer"""
+        self.display.clear()
+        self.player.draw(self.display.buffer)
+        self.display.flip()
+
+    def _maintain_fps(self):
+        """Control de tasa de refresco con ajuste dinámico"""
+        self.clock.tick(GAME_CONFIG['render']['max_fps'])
+        self.debug.track_fps()
+
+    async def _safe_shutdown(self):
+        """Apagado controlado de todos los sistemas"""
+        with self.debug.track_performance("ShutdownSequence"):
+            await self.display.cleanup()
+            await self.resources.release_all_assets()
+            pg.quit()
+            self.debug.generate_performance_report()
+
 async def main():
-    """Punto de entrada principal de la aplicación"""
+    """Punto de entrada principal del juego"""
     game = DebugGameCore()
     
     try:
-        with game.debug.track_performance("FullExecution"):
+        with game.debug.track_performance("FullRuntime"):
             await game.boot()
             await game.execution.run(
-                main_systems=[game.run_game_loop],
+                main_systems=[game.game_loop],
                 background_systems=[game.resources.background_loading]
             )
     except Exception as e:
-        game.debug.log_exception("MainProcess", e, critical=True)
+        game.debug.log_exception("CriticalFailure", e, critical=True)
     finally:
         if game.execution.is_running:
             await game._safe_shutdown()

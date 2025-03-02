@@ -3,20 +3,19 @@ import asyncio
 import logging
 import platform
 import time
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from pygame.locals import *
 
-from game_core.managers.resource import ResourceManager
-from game_core import PyGameInitialization
+from display_manager import DisplayManager
 from settings import GAME_CONFIG
+from .managers.resource import ResourceManager
+from .initialization import PyGameInitialization
 
-# Configuración inicial de logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('GameCore')
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from .managers import DisplayManager, InputManager, AudioManager
+    from .managers import InputManager, AudioManager
     from .boot import BootManager
 
 @dataclass
@@ -32,12 +31,12 @@ class GameCoreError(Exception):
     pass
 
 class GameCore:
-    """Motor central del juego con gestión de subsistemas y recursos"""
+    """Núcleo principal del juego con gestión avanzada de subsistemas"""
     
     __slots__ = (
-        'running', '_display', 'clock', 'resource', 
-        'boot', 'display', 'input', 'audio', '_delta_time',
-        '_system_info', '_frame_times', '_target_fps', '_vsync'
+        'running', 'clock', 'resource', 'boot', 'display',
+        'input', 'audio', '_delta_time', '_system_info',
+        '_frame_times', '_target_fps', '_vsync', '_initialized'
     )
     
     _instance: Optional['GameCore'] = None
@@ -52,75 +51,54 @@ class GameCore:
         if self._initialized:
             return
             
-        # Configuración de inicialización
-        self.initializer = PyGameInitialization(
-            config=self._load_config()
-        )
+        # Configuración inicial
+        self.initializer = PyGameInitialization(config=GAME_CONFIG)
+        self.initializer.configure(
+            window_title="Mi Juego",
+            vsync=True,
+            gl_version=(3, 3))
         
-        # Usando el inicializador
-        self.initializer.configure({
-            'window_title': "Mi Juego",
-            'vsync': True
-        })
-
-        self.initialization = PyGameInitialization(config=GAME_CONFIG)  # ✅ Usa la clase
-        self.initialization.initialize()
-        
-    async def quick_boot(self):
-        """Usando Initialization para el proceso de arranque"""
-        await self.initialization.async_initialize(
-            systems=[self._init_pygame, self._init_display]
-        )
-
         # Estado del sistema
-        self.running = True
+        self.running = False
         self._delta_time: float = 0.0
         self._frame_times: list = []
-        self._target_fps: int = 144
-        self._vsync: bool = True
+        self._target_fps: int = GAME_CONFIG['render']['target_fps']
+        self._vsync: bool = GAME_CONFIG['render']['vsync']
         
         # Subsistemas
+        self.clock: pg.time.Clock = None
         self.resource: ResourceManager = ResourceManager(self)
         self.boot: Optional['BootManager'] = None
-        self.display: Optional['DisplayManager'] = None
+        self.display: DisplayManager = None
         self.input: Optional['InputManager'] = None
         self.audio: Optional['AudioManager'] = None
         
         # Información del sistema
         self._system_info: Optional[SystemInfo] = None
         
-        self._init_pygame()
-        self._init_subsystems()
-        self._log_system_info()
-        
         self._initialized = True
 
-    def _init_pygame(self):
-        """Inicialización segura de Pygame con fallbacks"""
+    async def initialize(self):
+        """Inicialización asíncrona del núcleo"""
         try:
-            pg.init()
-            pg.mixer.pre_init(44100, -16, 2, 4096)
-            pg.display.init()
-            pg.joystick.init()
-            self._check_opengl_support()
-        except pg.error as e:
-            logger.critical(f"Error inicializando Pygame: {e}")
-            raise GameCoreError("Fallo crítico en inicialización de Pygame") from e
+            await self._initialize_pygame()
+            self._initialize_subsystems()
+            self._log_system_info()
+            self.running = True
+        except Exception as e:
+            logger.critical("Fallo en inicialización", exc_info=True)
+            await self.emergency_shutdown()
+            raise GameCoreError("Error crítico durante inicialización") from e
 
-    def _check_opengl_support(self):
-        """Verifica capacidades OpenGL mínimas"""
-        gl_version = (3, 3)
-        try:
-            pg.display.gl_set_attribute(pg.GL_CONTEXT_PROFILE_MASK, pg.GL_CONTEXT_PROFILE_CORE)
-            pg.display.gl_set_attribute(pg.GL_CONTEXT_MAJOR_VERSION, gl_version[0])
-            pg.display.gl_set_attribute(pg.GL_CONTEXT_MINOR_VERSION, gl_version[1])
-        except pg.error as e:
-            logger.warning(f"OpenGL {gl_version} no soportado: {e}")
-            self._vsync = False
-
-    def _init_subsystems(self):
-        """Inicialización diferida de subsistemas no críticos"""
-        self.clock = pg.time.Clock()
+    async def _initialize_pygame(self):
+        """Inicialización segura de Pygame con capacidades extendidas"""
+        await self.initializer.async_initialize(
+            subsystems=[
+                'display',
+                'audio',
+                'input'
+            ]
+        )
         self._system_info = SystemInfo(
             pygame_version=pg.version.ver,
             python_version=platform.python_version(),
@@ -129,33 +107,56 @@ class GameCore:
             opengl_version=pg.display.gl_get_attribute(pg.GL_VERSION) or "N/A"
         )
 
+    def _initialize_subsystems(self):
+        """Configuración de subsistemas principales"""
+        self.clock = pg.time.Clock()
+        self.display = DisplayManager(self)
+        
+        if GAME_CONFIG['audio']['enabled']:
+            self._initialize_audio_subsystem()
+            
+        if GAME_CONFIG['input']['enabled']:
+            self._initialize_input_subsystem()
+
+    def _initialize_audio_subsystem(self):
+        """Configuración avanzada del sistema de audio"""
+        from .managers.audio import AudioManager
+        self.audio = AudioManager(self)
+        self.audio.configure(**GAME_CONFIG['audio'])
+
+    def _initialize_input_subsystem(self):
+        """Configuración de dispositivos de entrada"""
+        from .managers.input import InputManager
+        self.input = InputManager(self)
+        self.input.configure(**GAME_CONFIG['controls'])
+
     def _log_system_info(self):
-        """Registro detallado de información del sistema"""
+        """Registro de información técnica del sistema"""
         logger.info("\n".join([
-            "=== System Info ===",
+            "=== Sistema Info ===",
             f"PyGame: {self._system_info.pygame_version}",
             f"Python: {self._system_info.python_version}",
-            f"Platform: {self._system_info.platform}",
-            f"Renderer: {self._system_info.renderer}",
+            f"Plataforma: {self._system_info.platform}",
+            f"Renderizador: {self._system_info.renderer}",
             f"OpenGL: {self._system_info.opengl_version}",
-            "==================="
+            "===================="
         ]))
 
-    async def quick_boot(self, config_path: Optional[str] = None):
-        """Arranque rápido con inicialización paralela de subsistemas"""
-        from .boot import BootManager
+    async def quick_boot(self):
+        """Secuencia de arranque rápido optimizada"""
         try:
+            from .boot import BootManager
             self.boot = BootManager(self)
             await self.boot.cold_start()
-            logger.info("Boot sequence completed successfully")
+            logger.info("Arranque completado exitosamente")
         except Exception as e:
-            logger.critical(f"Boot failed: {e}")
+            logger.critical(f"Fallo en arranque: {e}")
             await self.emergency_shutdown()
             raise
 
     async def emergency_shutdown(self):
         """Apagado de emergencia controlado"""
-        logger.error("Initiating emergency shutdown...")
+        logger.error("Iniciando apagado de emergencia...")
         self.running = False
         
         shutdown_tasks = []
@@ -170,17 +171,13 @@ class GameCore:
     def begin_frame(self):
         """Prepara el nuevo frame de renderizado"""
         self.clock.tick(self._target_fps)
-        start_time = time.perf_counter()
-        
-        # Actualización de delta time con media móvil
-        if len(self._frame_times) >= 60:
+        self._frame_times.append(time.perf_counter())
+        if len(self._frame_times) > 120:
             self._frame_times.pop(0)
-        self._frame_times.append(start_time)
 
     def end_frame(self):
         """Finaliza el frame y sincroniza"""
-        end_time = time.perf_counter()
-        self._delta_time = end_time - self._frame_times[-1]
+        self._delta_time = time.perf_counter() - self._frame_times[-1]
         if self._vsync:
             pg.display.flip()
 
@@ -191,14 +188,15 @@ class GameCore:
 
     @property
     def fps(self) -> float:
-        """FPS actuales suavizados"""
+        """FPS actuales suavizados (media móvil de 60 frames)"""
         if len(self._frame_times) < 2:
             return 0.0
-        return 1.0 / (sum(self._frame_times[-10:]) / len(self._frame_times[-10:]))
+        return 60 / sum(self._frame_times[-60:] - self._frame_times[-61:-1])
 
     def set_target_fps(self, fps: int):
         """Configura el objetivo de FPS (0 para ilimitado)"""
         self._target_fps = max(0, fps)
+        logger.info(f"Objetivo de FPS configurado a {self._target_fps}")
 
     def __enter__(self):
         return self

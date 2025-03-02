@@ -1,94 +1,95 @@
 import math
 import pygame as pg
 
-# Configuración principal del juego
+# Configuración centralizada del juego
 GAME_CONFIG = {
-    'resolution': (1280, 720),
-    'max_fps': 60,
-    'window_title': "FPS Game",
-    'asset_paths': {
+    'core': {
+        'resolution': (1280, 720),
+        'max_fps': 60,
+        'window_title': "FPS Game",
+        'font_path': r"fonts\Teko-Regular.ttf",
+        'music': {
+            'enabled': True,
+            'theme_path': 'resources/sound/theme.mp3'
+        }
+    },
+    
+    'player': {
+        'position': (1.5, 5),  # Posición en el mini mapa
+        'angle': 0,
+        'move_speed': 4.5,
+        'rotation_speed': 0.002,
+        'jump_force': 8.0,
+        'size_scale': 60,
+        'max_health': 100,
+        'fov': math.pi / 3,
+        'max_depth': 20
+    },
+    
+    'render': {
+        'floor_color': (30, 30, 30),
+        'texture_size': 256,
+        'tile_size': 60,
+        'num_rays': None,  # Se calcula dinámicamente
+        'scale': None,      # Se calcula dinámicamente
+        'screen_dist': None # Se calcula dinámicamente
+    },
+    
+    'controls': {
+        'mouse': {
+            'sensitivity': 0.0003,
+            'max_rel': 40,
+            'border_left': 100,
+            'border_right': None  # Se calcula dinámicamente
+        },
+        'invert_y_axis': False
+    },
+    
+    'assets': {
         'textures': 'assets/textures',
         'sounds': 'assets/audio',
         'fonts': 'assets/fonts',
         'models': 'assets/models'
     },
+    
     'debug': {
         'show_fps': True,
-        'log_level': 'DEBUG'
-    },
-    'input': {
-        'mouse_sensitivity': 1.5,
-        'invert_y_axis': False
+        'log_level': 'DEBUG',
+        'colors': {
+            'white': (255, 255, 255),
+            'black': (0, 0, 0)
+        }
     }
 }
 
-# Configuración específica de renderizado
-RESOLUTION = GAME_CONFIG['resolution']
-FPS = GAME_CONFIG['max_fps']
-
-# Configuración del jugador
-PLAYER_CONFIG = {
-    'move_speed': 4.5,
-    'jump_force': 8.0,
-    'max_health': 100
-}
-
-# Resolución
-RESOLUTION = (1280, 720)
-HALF_WIDTH = RESOLUTION[0] // 2
-HALF_HEIGHT = RESOLUTION[1] // 2
-WIDTH = 100  # Ajustar según necesidades de renderizado
-
-# Jugador
-PLAYER_POS = (1.5, 1.5)
+PLAYER_POS = [100, 100]
 PLAYER_ANGLE = 0
 PLAYER_MAX_HEALTH = 100
-PLAYER_SPEED = 0.004
-PLAYER_SIZE_SCALE = 0.2
+PLAYER_SPEED = 5
+PLAYER_SIZE_SCALE = 1.5
+MOUSE_SENSITIVITY = 0.5
 
-# Mouse
-MOUSE_BORDER_LEFT = 100
-MOUSE_BORDER_RIGHT = RESOLUTION[0] - 100
-MOUSE_MAX_REL = 40
-MOUSE_SENSITIVITY = 0.0002
+# Cálculos dinámicos basados en configuración
+RESOLUTION = GAME_CONFIG['core']['resolution']
+GAME_CONFIG['render']['num_rays'] = RESOLUTION[0] // 2
+GAME_CONFIG['render']['scale'] = RESOLUTION[0] // GAME_CONFIG['render']['num_rays']
+GAME_CONFIG['render']['screen_dist'] = (RESOLUTION[0] // 2) / math.tan(GAME_CONFIG['player']['fov'] / 2)
+GAME_CONFIG['controls']['mouse']['border_right'] = RESOLUTION[0] - GAME_CONFIG['controls']['mouse']['border_left']
 
-# game settings
-RES = WIDTH, HEIGHT = 1600, 900
-# RES = WIDTH, HEIGHT = 1920, 1080
-HALF_WIDTH = RESOLUTION[0] // 2
-HALF_HEIGHT = RESOLUTION[1] // 2
-FPS = 0
-FONT_PATH = r"fonts\Teko-Regular.ttf"
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-FLOOR_COLOR = (150, 150, 150)
+# Accesos rápidos
+CORE = GAME_CONFIG['core']
+PLAYER = GAME_CONFIG['player']
+RENDER = GAME_CONFIG['render']
+CONTROLS = GAME_CONFIG['controls']
+ASSETS = GAME_CONFIG['assets']
+DEBUG = GAME_CONFIG['debug']
 
-PLAYER_POS = 1.5, 5  # mini_map
-PLAYER_ANGLE = 0
-PLAYER_SPEED = 0.004
-PLAYER_ROT_SPEED = 0.002
-PLAYER_SIZE_SCALE = 60
-PLAYER_MAX_HEALTH = 100
+# Constantes derivadas
+HALF_RES = (RESOLUTION[0] // 2, RESOLUTION[1] // 2)
+HALF_FOV = PLAYER['fov'] / 2
+DELTA_ANGLE = PLAYER['fov'] / RENDER['num_rays']
+HALF_TEXTURE_SIZE = RENDER['texture_size'] // 2
 
-MOUSE_SENSITIVITY = 0.0003
-MOUSE_MAX_REL = 40
-MOUSE_BORDER_LEFT = 100
-MOUSE_BORDER_RIGHT = WIDTH - MOUSE_BORDER_LEFT
-
-FLOOR_COLOR = (30, 30, 30)
-
-FOV = math.pi / 3
-HALF_FOV = FOV / 2
-NUM_RAYS = WIDTH // 2
-HALF_NUM_RAYS = NUM_RAYS // 2
-DELTA_ANGLE = FOV / NUM_RAYS
-MAX_DEPTH = 20
-
-SCREEN_DIST = HALF_WIDTH / math.tan(HALF_FOV)
-SCALE = WIDTH // NUM_RAYS
-
-TEXTURE_SIZE = 256
-TILE_SIZE = 60
-HALF_TEXTURE_SIZE = TEXTURE_SIZE // 2
-MUSIC_ON = True
-MUSIC_PATH= 'resources/sound/theme.mp3'
+# Variables de estado del juego (deberían estar en otro módulo)
+current_fps = 0
+player_health = PLAYER['max_health']
